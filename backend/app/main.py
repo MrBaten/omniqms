@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
@@ -111,6 +112,28 @@ def create_app() -> FastAPI:
             if candidate.is_file() and candidate.is_relative_to(dist):
                 return FileResponse(candidate)
         return FileResponse(index, headers={"Cache-Control": "no-cache"})
+
+    @app.exception_handler(RequestValidationError)
+    async def friendly_validation(request: Request, exc: RequestValidationError):
+        """Turn pydantic errors into one readable sentence for the dashboard (never echoes input values)."""
+        labels = {"email": "Email", "password": "Password", "workspace_name": "Business / workspace name",
+                  "name": "Name", "text": "Message", "title": "Title", "content": "Content", "question": "Question"}
+        msgs = []
+        for err in exc.errors():
+            field = next((str(p) for p in reversed(err.get("loc", ())) if isinstance(p, str) and p != "body"), "")
+            label = labels.get(field, field.replace("_", " ").capitalize() or "Request")
+            typ, ctx = err.get("type", ""), err.get("ctx") or {}
+            if field == "email":
+                msgs.append("Email: enter a valid address like name@example.com")
+            elif typ == "string_too_short":
+                msgs.append(f"{label}: must be at least {ctx.get('min_length')} characters")
+            elif typ == "string_too_long":
+                msgs.append(f"{label}: must be at most {ctx.get('max_length')} characters")
+            elif typ == "missing":
+                msgs.append(f"{label}: required")
+            else:
+                msgs.append(f"{label}: {str(err.get('msg', 'invalid')).removeprefix('Value error, ')}")
+        return JSONResponse({"detail": "; ".join(dict.fromkeys(msgs)) or "Invalid request"}, status_code=422)
 
     return app
 
