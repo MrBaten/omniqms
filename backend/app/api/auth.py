@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.security import (clear_session, client_ip, current_user, hash_password, issue_session,
-                               login_ip_limiter, login_limiter, verify_password)
+                               login_ip_limiter, login_limiter, register_ip_limiter, revoke_session, verify_password)
 from app.models import AuditLog, Membership, User, Workspace
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -33,6 +33,14 @@ class RegisterIn(BaseModel):
     def _email(cls, v: str) -> str:
         return _norm_email(v)
 
+    @field_validator("password")
+    @classmethod
+    def _pw_bytes(cls, v: str) -> str:
+        # bcrypt silently ignores everything after 72 bytes (multi-byte chars count more than once)
+        if len(v.encode("utf-8")) > 72:
+            raise ValueError("password must be at most 72 bytes")
+        return v
+
 
 class LoginIn(BaseModel):
     email: str = Field(max_length=320)
@@ -52,7 +60,11 @@ def user_payload(db: Session, user: User) -> dict:
 
 
 @router.post("/register")
-def register(body: RegisterIn, response: Response, db: Session = Depends(get_db)):
+def register(body: RegisterIn, request: Request, response: Response, db: Session = Depends(get_db)):
+    ip = client_ip(request)
+    if register_ip_limiter.blocked(ip):
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+    register_ip_limiter.hit(ip)
     if db.scalar(select(User.id).where(User.email == body.email)) is not None:
         raise HTTPException(status_code=409, detail="Could not register with these details")
     user = User(email=body.email, name=body.name.strip(), password_hash=hash_password(body.password))
@@ -83,7 +95,8 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
 
 
 @router.post("/logout")
-def logout(response: Response):
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    revoke_session(request, db)
     clear_session(response)
     return {"ok": True}
 

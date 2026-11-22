@@ -23,6 +23,22 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
        "object-src 'none'")
 
 
+MAX_API_BODY = 2_000_000  # KB docs are ≤200k chars (≤~800 KB UTF-8); nothing legitimate is bigger
+
+
+def _body_too_large(request: Request) -> Response | None:
+    if not request.url.path.startswith("/api/") or request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+    cl = request.headers.get("content-length")
+    if cl is None:
+        if "chunked" in (request.headers.get("transfer-encoding") or "").lower():
+            return JSONResponse({"detail": "Content-Length required"}, status_code=411)
+        return None
+    if not cl.strip().isdigit() or int(cl) > MAX_API_BODY:
+        return JSONResponse({"detail": "Payload too large"}, status_code=413)
+    return None
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     ensure_safe_config(settings)
@@ -53,8 +69,11 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def security_middleware(request: Request, call_next):
-        if not csrf_ok(request):
-            resp: Response = JSONResponse({"detail": "CSRF token missing or invalid"}, status_code=403)
+        too_large = _body_too_large(request)
+        if too_large is not None:
+            resp: Response = too_large
+        elif not csrf_ok(request):
+            resp = JSONResponse({"detail": "CSRF token missing or invalid"}, status_code=403)
         else:
             resp = await call_next(request)
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")

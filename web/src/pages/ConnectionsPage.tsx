@@ -11,6 +11,13 @@ const DESCRIPTIONS: Record<string, string> = {
   sandbox: "A simulated platform for testing the full pipeline without real credentials.",
 };
 
+// Must mirror backend/app/api/connections.py _ERROR_CODES (+ platform_not_configured).
+const OAUTH_ERRORS = new Set([
+  "access_denied", "invalid_state", "expired_state", "not_authenticated", "account_in_use",
+  "exchange_failed", "unknown_platform", "no_accounts",
+]);
+const KNOWN_PLATFORMS = new Set(Object.keys(DESCRIPTIONS));
+
 export default function ConnectionsPage() {
   const wid = useWid();
   const toast = useToast();
@@ -39,8 +46,9 @@ export default function ConnectionsPage() {
   useEffect(() => {
     const ok = params.get("connected");
     const err = params.get("error");
-    if (ok) toast(`${platformLabel(ok)} connected successfully.`, "ok");
-    if (err) toast(`Connection failed: ${err.replace(/_/g, " ")}`, "err");
+    // Only show text we control: these params come from the URL and could be crafted by anyone.
+    if (ok && KNOWN_PLATFORMS.has(ok)) toast(`${platformLabel(ok)} connected successfully.`, "ok");
+    if (err) toast(`Connection failed${OAUTH_ERRORS.has(err) ? `: ${err.replace(/_/g, " ")}` : "."}`, "err");
     if (ok || err) setParams({}, { replace: true });
   }, [params, setParams, toast]);
 

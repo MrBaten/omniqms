@@ -113,7 +113,9 @@ async def oauth_callback(platform: str, request: Request, db: Session = Depends(
             if acct.status != "disconnected":
                 in_use += 1
                 continue
-            db.delete(acct)  # disconnected elsewhere: release it (its old data stays with nobody)
+            # Disconnected elsewhere: release the external id but keep the row, so the previous workspace's
+            # conversation history is not wiped by ON DELETE CASCADE when another tenant connects it.
+            acct.external_id = f"released-{acct.id}:{ext}"[:128]
             db.flush()
             acct = None
         if acct is None:

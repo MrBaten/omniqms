@@ -28,6 +28,9 @@ def backoff_seconds(attempts: int) -> float:
 
 def _requeue_stale(db: Session) -> None:
     cutoff = now_utc() - STALE_RUNNING
+    # A job that keeps hanging/crashing the worker must not be retried forever.
+    db.execute(update(Job).where(Job.status == "running", Job.run_after < cutoff, Job.attempts >= MAX_ATTEMPTS)
+               .values(status="failed", last_error="stale: max attempts exceeded"))
     db.execute(update(Job).where(Job.status == "running", Job.run_after < cutoff)
                .values(status="pending"))
 
@@ -43,10 +46,15 @@ def claim_next(db: Session) -> Job | None:
     if job is None:
         db.commit()
         return None
-    job.status = "running"
-    job.attempts += 1
-    job.run_after = now_utc()  # marks claim time for stale detection
+    # Atomic compare-and-set claim: if another worker/process claimed it between our SELECT and this
+    # UPDATE, rowcount is 0 and we back off (prevents double processing → duplicate customer replies).
+    res = db.execute(update(Job).where(Job.id == job.id, Job.status == "pending")
+                     .values(status="running", attempts=Job.attempts + 1, run_after=now_utc())
+                     .execution_options(synchronize_session=False))
     db.commit()
+    if res.rowcount != 1:
+        return None
+    db.refresh(job)
     return job
 
 

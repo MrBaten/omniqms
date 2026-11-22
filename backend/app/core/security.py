@@ -9,13 +9,13 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from fastapi import Depends, HTTPException, Request, Response
 from passlib.context import CryptContext
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.core.crypto import constant_time_equals, random_token
 from app.core.db import get_db
-from app.models import Membership, User, Workspace
+from app.models import Membership, RevokedSession, User, Workspace
 
 SESSION_COOKIE = "qms_session"
 CSRF_COOKIE = "qms_csrf"
@@ -30,6 +30,10 @@ _DUMMY_HASH = _pwd.hash("dummy-password-for-timing")
 
 # --- startup safety --------------------------------------------------------------------------
 def ensure_safe_config(s: Settings) -> None:
+    if s.env not in ("dev", "test", "prod"):  # e.g. ENV=production would silently skip every prod check
+        raise RuntimeError(f"Unsafe configuration: ENV must be dev, test or prod (got {s.env!r})")
+    if "*" in [o.strip() for o in s.cors_origins.split(",")]:  # credentialed CORS would reflect any origin
+        raise RuntimeError("Unsafe configuration: CORS_ORIGINS must list explicit origins, not '*'")
     if not s.is_prod:
         return
     problems = []
@@ -62,23 +66,44 @@ def verify_password(password: str, password_hash: str | None) -> bool:
 def create_session_token(user_id: int, s: Settings | None = None) -> str:
     s = s or get_settings()
     now = datetime.now(timezone.utc)
-    payload = {"sub": str(user_id), "typ": "session", "iat": now,
+    payload = {"sub": str(user_id), "typ": "session", "iat": now, "jti": random_token(16),
                "exp": now + timedelta(hours=s.session_hours)}
     return jwt.encode(payload, s.secret_key, algorithm="HS256")
 
 
-def decode_session_token(token: str, s: Settings | None = None) -> int | None:
+def decode_session_claims(token: str, s: Settings | None = None) -> dict | None:
+    """Verified session claims (sub, jti, exp) or None."""
     s = s or get_settings()
     try:
-        payload = jwt.decode(token, s.secret_key, algorithms=["HS256"], options={"require": ["exp", "sub"]})
+        payload = jwt.decode(token, s.secret_key, algorithms=["HS256"],
+                             options={"require": ["exp", "sub", "jti"]})
     except jwt.PyJWTError:
         return None
-    if payload.get("typ") != "session":
+    if payload.get("typ") != "session" or not isinstance(payload.get("jti"), str):
         return None
     try:
-        return int(payload["sub"])
+        payload["uid"] = int(payload["sub"])
     except (KeyError, ValueError):
         return None
+    return payload
+
+
+def decode_session_token(token: str, s: Settings | None = None) -> int | None:
+    claims = decode_session_claims(token, s)
+    return claims["uid"] if claims else None
+
+
+def revoke_session(request: Request, db: Session) -> None:
+    """Server-side invalidation of the presented session token (logout)."""
+    claims = decode_session_claims(request.cookies.get(SESSION_COOKIE) or "")
+    if not claims:
+        return
+    now = datetime.now(timezone.utc)
+    db.execute(delete(RevokedSession).where(RevokedSession.expires_at < now))
+    if db.get(RevokedSession, claims["jti"][:64]) is None:
+        db.add(RevokedSession(jti=claims["jti"][:64],
+                              expires_at=datetime.fromtimestamp(claims["exp"], tz=timezone.utc)))
+    db.commit()
 
 
 def issue_session(response: Response, user_id: int) -> None:
@@ -111,10 +136,10 @@ def user_from_request(request: Request, db: Session) -> User | None:
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return None
-    uid = decode_session_token(token)
-    if uid is None:
+    claims = decode_session_claims(token)
+    if claims is None or db.get(RevokedSession, claims["jti"][:64]) is not None:
         return None
-    user = db.get(User, uid)
+    user = db.get(User, claims["uid"])
     if user is None or not user.is_active:
         return None
     return user
@@ -190,6 +215,7 @@ class RateLimiter:
 
 login_limiter = RateLimiter(limit=10, window_seconds=300)
 login_ip_limiter = RateLimiter(limit=50, window_seconds=300)
+register_ip_limiter = RateLimiter(limit=20, window_seconds=3600)  # slows account/email enumeration + signup spam
 
 
 def client_ip(request: Request) -> str:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 
 from sqlalchemy.orm import Session
 
@@ -23,6 +24,29 @@ _SMALLTALK_EN = re.compile(r"^\s*(hi+|hello+|hey+|salam|assalamu ?alaikum|good (
                            r"[\s!.?,]*$", re.I)
 _THANKS = re.compile(r"thank|ধন্যবাদ", re.I)
 _LEAK_MARKERS = ("<customer_message", "</knowledge", "<knowledge", "SYSTEM PROMPT", "system prompt:")
+_URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>\"']+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|co|me|ly|gl|xyz|info|"
+                     r"biz|link|app|bd|in|shop|store|site|online|top|click|to)\b(?:/[^\s<>\"']*)?", re.I)
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_PHONE_RE = re.compile(r"\+?\d[\d\s().-]{5,}\d")
+
+
+def _digits(text: str) -> str:
+    return "".join(str(unicodedata.digit(ch)) for ch in text if ch.isdigit())
+
+
+def _unverified_contact(answer: str, chunks) -> str | None:
+    """Return the first link/email/phone number in the answer that does not appear in the retrieved KB."""
+    kb = "\n".join(f"{c.title}\n{c.text}" for c in chunks).casefold()
+    for m in list(_EMAIL_RE.findall(answer)) + list(_URL_RE.findall(answer)):
+        token = m.casefold().rstrip(".,;:!?)»”'\"")
+        if token and token not in kb:
+            return token
+    kb_digits = _digits(kb)
+    for m in _PHONE_RE.findall(answer):
+        d = _digits(m)
+        if len(d) >= 7 and d not in kb_digits:
+            return m
+    return None
 
 
 def _is_bangla(text: str) -> bool:
@@ -78,17 +102,17 @@ async def answer(db: Session, workspace: Workspace, question: str, history: list
         result["reason"] = "empty_message"
         return result
 
-    if _SMALLTALK_EN.match(q):
+    keywords = [k.casefold() for k in settings.get("escalation_keywords") or [] if k]
+    q_fold = q.casefold()
+    escalate = next((k for k in keywords if k in q_fold), None)
+
+    if _SMALLTALK_EN.match(q) and not escalate:
         bn = _is_bangla(q)
         if _THANKS.search(q):
             text = "আপনাকেও ধন্যবাদ! আর কিছু জানার থাকলে জানাবেন।" if bn else "You're welcome! Let us know if there's anything else we can help with."
         else:
             text = "হ্যালো! কীভাবে সাহায্য করতে পারি?" if bn else "Hello! How can we help you today?"
         return {"answer": text, "confidence": 0.9, "needs_human": False, "reason": "small_talk", "sources": []}
-
-    keywords = [k.casefold() for k in settings.get("escalation_keywords") or [] if k]
-    q_fold = q.casefold()
-    escalate = next((k for k in keywords if k in q_fold), None)
 
     ret = retrieve(db, workspace.id, q, top_k=4)
     sources, seen = [], set()
@@ -116,12 +140,15 @@ async def answer(db: Session, workspace: Workspace, question: str, history: list
 
     text = _cap(llm.answer, limit)
     leaked = any(m.lower() in text.lower() for m in _LEAK_MARKERS)
+    unverified = _unverified_contact(text, ret.chunks) if text else None  # links/phones/emails not in the KB
     confidence = round(min(llm.confidence, ret.signal), 4)
-    needs_human = bool(llm.needs_human or not text or leaked or escalate)
+    needs_human = bool(llm.needs_human or not text or leaked or escalate or unverified)
     reason = llm.reason
     if escalate:
         reason = f"escalation_keyword:{escalate}"
     elif leaked:
         reason, text = "output_guard", ""
+    elif unverified:
+        reason = "output_guard:unverified_contact"
     result.update(answer=text, confidence=confidence, needs_human=needs_human, reason=reason)
     return result

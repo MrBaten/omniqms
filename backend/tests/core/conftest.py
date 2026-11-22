@@ -10,7 +10,7 @@ from app.adapters.base import (AccountGrant, InboundEvent, PlatformAdapter, Poll
                                TokenBundle)
 from app.core.config import get_settings
 from app.core.db import SessionLocal, create_all, init_engine
-from app.core.security import login_ip_limiter, login_limiter
+from app.core.security import login_ip_limiter, login_limiter, register_ip_limiter
 from app.services import registry
 
 WEBHOOK_SECRET = "s3cret"
@@ -107,6 +107,7 @@ def env(tmp_path, monkeypatch):
     create_all()
     login_limiter.reset()
     login_ip_limiter.reset()
+    register_ip_limiter.reset()
     yield
     registry.set_override(None)
     get_settings.cache_clear()

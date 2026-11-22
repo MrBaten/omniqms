@@ -170,6 +170,13 @@ class Job(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class RevokedSession(Base):
+    """Session JWT ids revoked by logout (security fix: logout must invalidate the token server-side)."""
+    __tablename__ = "revoked_sessions"
+    jti: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = _id()
