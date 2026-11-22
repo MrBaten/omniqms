@@ -15,11 +15,19 @@ _engine = None
 _SessionLocal: sessionmaker | None = None
 
 
+def normalize_db_url(url: str) -> str:
+    """Hosting providers (Railway, Heroku…) give postgres:// URLs; SQLAlchemy needs a driver name."""
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
+
+
 def init_engine(url: str | None = None):
     """(Re)initialise the engine. Tests call this with an in-memory/temp URL."""
     global _engine, _SessionLocal
-    url = url or get_settings().database_url
-    kwargs = {}
+    url = normalize_db_url(url or get_settings().database_url)
+    kwargs = {"pool_pre_ping": True} if not url.startswith("sqlite") else {}
     if url.startswith("sqlite"):
         kwargs["connect_args"] = {"check_same_thread": False}
     _engine = create_engine(url, future=True, **kwargs)
