@@ -18,6 +18,7 @@ HANDLERS = {
     "generate_reply": replies.handle_generate_reply,
     "send_reply": replies.handle_send_reply,
     "poll_account": polling.handle_poll_account,
+    "refresh_tokens": polling.handle_refresh_tokens,
 }
 
 
@@ -55,6 +56,7 @@ async def process_due_jobs(db: Session | None = None, max_jobs: int = 50) -> int
 async def run_worker(stop_event: asyncio.Event) -> None:
     s = get_settings()
     last_schedule = 0.0
+    last_refresh = 0.0
     log.info("worker started")
     while not stop_event.is_set():
         processed = 0
@@ -62,6 +64,9 @@ async def run_worker(stop_event: asyncio.Event) -> None:
         try:
             if time.monotonic() - last_schedule > 15:
                 polling.schedule_polls(db)
+                if time.monotonic() - last_refresh > 3600:
+                    polling.schedule_token_refreshes(db)
+                    last_refresh = time.monotonic()
                 last_schedule = time.monotonic()
             processed = await process_due_jobs(db)
         except Exception:

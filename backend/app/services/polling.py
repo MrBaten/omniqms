@@ -44,6 +44,48 @@ def schedule_polls(db: Session) -> int:
     return created
 
 
+REFRESH_AHEAD = {"instagram": timedelta(days=7)}  # long-lived tokens that must be refreshed before expiry
+
+
+def schedule_token_refreshes(db: Session) -> int:
+    """Enqueue refresh_tokens jobs for accounts whose long-lived tokens expire soon."""
+    now = now_utc()
+    pending = {(j.payload or {}).get("account_id") for j in
+               db.scalars(select(Job).where(Job.type == "refresh_tokens", Job.status.in_(("pending", "running"))))}
+    created = 0
+    for platform, ahead in REFRESH_AHEAD.items():
+        for acct in db.scalars(select(ConnectedAccount).where(ConnectedAccount.platform == platform,
+                                                              ConnectedAccount.status == "connected")):
+            exp = as_utc(acct.token_expires_at)
+            if exp is None or acct.id in pending or exp - now > ahead:
+                continue
+            enqueue(db, "refresh_tokens", {"account_id": acct.id}, workspace_id=acct.workspace_id)
+            created += 1
+    db.commit()
+    return created
+
+
+async def handle_refresh_tokens(db: Session, job: Job) -> None:
+    acct = db.get(ConnectedAccount, (job.payload or {}).get("account_id"))
+    if acct is None or acct.status != "connected":
+        return
+    adapter = registry.find_adapter(acct.platform)
+    if adapter is None:
+        return
+    from app.services.replies import account_context
+    try:
+        tokens = await adapter.refresh_tokens(account_context(acct))
+    except AdapterError as e:
+        if e.needs_reconnect:
+            acct.status = "needs_reconnect"
+            db.commit()
+            return
+        raise
+    if tokens is not None:
+        store_tokens(acct, tokens)
+        db.commit()
+
+
 async def handle_poll_account(db: Session, job: Job) -> None:
     acct = db.get(ConnectedAccount, (job.payload or {}).get("account_id"))
     if acct is None or acct.status != "connected":
