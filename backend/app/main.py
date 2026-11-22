@@ -1,0 +1,99 @@
+"""FastAPI application factory."""
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+from pathlib import Path
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+
+from app.core.config import get_settings
+from app.core.db import create_all
+from app.core.security import csrf_ok, ensure_safe_config
+
+log = logging.getLogger("omniqms")
+
+WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
+
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; "
+       "font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; "
+       "object-src 'none'")
+
+
+def create_app() -> FastAPI:
+    settings = get_settings()
+    ensure_safe_config(settings)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app: FastAPI):
+        create_all()
+        stop = asyncio.Event()
+        task = None
+        if settings.worker_enabled and settings.env != "test":
+            from app.worker.runner import run_worker
+            task = asyncio.create_task(run_worker(stop))
+        yield
+        stop.set()
+        if task:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(task, timeout=10)
+
+    app = FastAPI(title="OmniQMS", version="0.1.0", lifespan=lifespan,
+                  docs_url=None if settings.is_prod else "/docs", redoc_url=None,
+                  openapi_url=None if settings.is_prod else "/openapi.json")
+
+    origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+    if origins:
+        app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True,
+                           allow_methods=["GET", "POST", "PUT", "DELETE"],
+                           allow_headers=["Content-Type", "X-CSRF-Token"])
+
+    @app.middleware("http")
+    async def security_middleware(request: Request, call_next):
+        if not csrf_ok(request):
+            resp: Response = JSONResponse({"detail": "CSRF token missing or invalid"}, status_code=403)
+        else:
+            resp = await call_next(request)
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+        resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        resp.headers.setdefault("Content-Security-Policy", CSP)
+        resp.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        if settings.cookie_secure:
+            resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        if request.url.path.startswith("/api/"):
+            resp.headers.setdefault("Cache-Control", "no-store")
+        return resp
+
+    from app.api import auth, connections, conversations, webhooks, workspace
+    for r in (auth.router, connections.router, conversations.router, workspace.router, webhooks.router):
+        app.include_router(r)
+
+    @app.get("/healthz", include_in_schema=False)
+    def healthz():
+        return {"ok": True}
+
+    @app.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse("/app/")
+
+    @app.get("/app", include_in_schema=False)
+    @app.get("/app/{path:path}", include_in_schema=False)
+    def spa(path: str = ""):
+        dist = WEB_DIST.resolve()
+        index = dist / "index.html"
+        if not index.exists():
+            return JSONResponse({"detail": "Dashboard not built. Run `npm run build` in web/."}, status_code=404)
+        if path:
+            candidate = (dist / path).resolve()
+            if candidate.is_file() and candidate.is_relative_to(dist):
+                return FileResponse(candidate)
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
+
+    return app
+
+
+app = create_app()
