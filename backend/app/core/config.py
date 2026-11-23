@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     meta_app_secret: str = ""
     meta_webhook_verify_token: str = ""
     meta_graph_version: str = "v26.0"
+    # Facebook Login for Business (Business-type apps): configuration ID that replaces the scope list
+    meta_login_config_id: str = ""
 
     # Instagram API with Instagram Login (Business Login for Instagram)
     ig_app_id: str = ""
@@ -44,6 +46,9 @@ class Settings(BaseSettings):
     # Worker
     worker_enabled: bool = True  # run the in-process worker loop on startup
     worker_interval_seconds: float = 1.0
+
+    operator_name: str = ""  # shown on /privacy, /terms, /data-deletion
+    contact_email: str = ""
 
     sandbox_enabled: bool = True  # sandbox platform for demos/tests; disable in prod if unwanted
 

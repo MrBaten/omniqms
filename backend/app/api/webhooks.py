@@ -24,7 +24,9 @@ def verify(platform: str, request: Request):
     qp = request.query_params
     mode, token, challenge = qp.get("hub.mode"), qp.get("hub.verify_token") or "", qp.get("hub.challenge") or ""
     if mode == "subscribe" and token and adapter.verify_token_matches(token) and challenge and len(challenge) <= 256:
+        log.info("webhook verify ok platform=%s", platform)
         return PlainTextResponse(challenge)
+    log.warning("webhook verify failed platform=%s mode=%s", platform, mode)
     raise HTTPException(status_code=403, detail="Verification failed")
 
 
@@ -51,6 +53,7 @@ async def receive(platform: str, request: Request, db: Session = Depends(get_db)
     except Exception:
         valid = False
     if not valid:
+        log.warning("webhook signature invalid platform=%s bytes=%d", platform, len(body))
         raise HTTPException(status_code=403, detail="Invalid signature")
     try:
         payload = json.loads(body or b"{}")
@@ -69,4 +72,6 @@ async def receive(platform: str, request: Request, db: Session = Depends(get_db)
         except Exception:
             db.rollback()
             log.exception("ingest failed platform=%s", platform)
+    log.info("webhook platform=%s object=%s events=%d stored=%d", platform,
+             str(payload.get("object", ""))[:20] if isinstance(payload, dict) else "", len(events), stored)
     return {"received": len(events), "stored": stored}

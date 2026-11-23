@@ -88,8 +88,8 @@ def create_app() -> FastAPI:
             resp.headers.setdefault("Cache-Control", "no-store")
         return resp
 
-    from app.api import auth, connections, conversations, webhooks, workspace
-    for r in (auth.router, connections.router, conversations.router, workspace.router, webhooks.router):
+    from app.api import auth, connections, conversations, legal, webhooks, workspace
+    for r in (auth.router, connections.router, conversations.router, workspace.router, webhooks.router, legal.router):
         app.include_router(r)
 
     @app.get("/healthz", include_in_schema=False)

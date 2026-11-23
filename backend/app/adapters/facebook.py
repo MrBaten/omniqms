@@ -37,13 +37,13 @@ class FacebookAdapter(PlatformAdapter):
     # --- OAuth ---------------------------------------------------------------------------
     def authorize_url(self, state: str, redirect_uri: str) -> str:
         s = get_settings()
-        q = urlencode({
-            "client_id": s.meta_app_id,
-            "redirect_uri": redirect_uri,
-            "state": state,
-            "response_type": "code",
-            "scope": ",".join(SCOPES),
-        })
+        params = {"client_id": s.meta_app_id, "redirect_uri": redirect_uri, "state": state, "response_type": "code"}
+        if s.meta_login_config_id:
+            # Facebook Login for Business: the saved configuration carries the permissions (no scope list)
+            params.update(config_id=s.meta_login_config_id, override_default_response_type="true")
+        else:
+            params["scope"] = ",".join(SCOPES)
+        q = urlencode(params)
         return f"https://www.facebook.com/{s.meta_graph_version}/dialog/oauth?{q}"
 
     async def exchange_code(self, code: str, redirect_uri: str) -> list[AccountGrant]:

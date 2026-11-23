@@ -193,6 +193,8 @@ async def handle_send_reply(db: Session, job: Job) -> None:
         return
 
     def fail(error: str, *, reconnect: bool = False) -> None:
+        log.warning("send_reply failed: platform=%s account=%s message=%s error=%s reconnect=%s",
+                    acct.platform, acct.id, out.id, error[:200], reconnect)
         out.delivery_status = "failed"
         out.error = error[:500]
         conv.status = "pending_human"
@@ -231,6 +233,8 @@ async def handle_send_reply(db: Session, job: Job) -> None:
         out.external_id = res.external_message_id
         out.error = None
         db.commit()
+        log.info("send_reply ok: platform=%s account=%s message=%s kind=%s author=%s",
+                 acct.platform, acct.id, out.id, conv.kind, out.author)
         return
     if res.needs_reconnect:
         return fail(res.error or "needs_reconnect", reconnect=True)
