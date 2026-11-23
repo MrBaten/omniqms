@@ -94,7 +94,11 @@ async def test_auto_reply_disabled(client, fake, db):
     client.put(f"/api/w/{wid}/settings", json={"auto_reply_enabled": False})
     msg = ingest_event(db, event(text="How many days does delivery inside Dhaka take?"))
     await run_jobs()
-    assert _conv(db, msg.id).status == "open" and not fake.sent
+    # draft-only mode: nothing is sent, but a confident AI draft waits for a human
+    conv = _conv(db, msg.id)
+    assert conv.status == "pending_human" and not fake.sent
+    draft = db.scalar(select(Message).where(Message.direction == "outbound"))
+    assert draft is not None and draft.delivery_status == "draft"
 
 
 async def test_send_failure_retry_then_success(client, fake, db):
@@ -220,3 +224,16 @@ async def test_sandbox_simulate_end_to_end(client, fake, db):
     assert stats["auto_replied_24h"] == 1
     lst = client.get(f"/api/w/{wid}/conversations", params={"q": "Karim"}).json()
     assert lst["total"] == 1 and lst["items"][0]["contact"]["display_name"] == "Karim"
+
+
+async def test_regenerate_after_kb_update(client, fake, db):
+    wid = setup_ws(client, fake)
+    client.put(f"/api/w/{wid}/settings", json={"auto_reply_enabled": False})
+    msg = ingest_event(db, event(text="How many days does delivery inside Dhaka take?"))
+    await run_jobs()
+    conv = _conv(db, msg.id)
+    r = client.post(f"/api/w/{wid}/conversations/{conv.id}/regenerate")
+    assert r.status_code == 200, r.text
+    await run_jobs()
+    drafts = db.scalars(select(Message).where(Message.conversation_id == conv.id, Message.direction == "outbound")).all()
+    assert len(drafts) == 1 and drafts[0].delivery_status == "draft"

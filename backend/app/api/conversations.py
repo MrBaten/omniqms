@@ -122,3 +122,23 @@ def set_status(cid: int, body: StatusIn, ctx: MemberContext = Depends(workspace_
     conv.updated_at = now_utc()
     db.commit()
     return {"id": conv.id, "status": conv.status}
+
+
+@router.post("/{cid}/regenerate")
+def regenerate(cid: int, ctx: MemberContext = Depends(workspace_member), db: Session = Depends(get_db)):
+    """Re-run the AI on the latest customer message (e.g. after updating the knowledge base).
+    Unsent AI drafts after it are discarded first; sent messages are never touched."""
+    from app.services.queue import enqueue
+    conv = _get_conv(db, ctx.workspace.id, cid)
+    last_in = db.scalar(select(Message).where(Message.conversation_id == conv.id, Message.direction == "inbound")
+                        .order_by(Message.id.desc()).limit(1))
+    if last_in is None:
+        raise HTTPException(status_code=409, detail="No customer message to answer")
+    later = db.scalars(select(Message).where(Message.conversation_id == conv.id, Message.id > last_in.id)).all()
+    if any(m.delivery_status != "draft" for m in later):
+        raise HTTPException(status_code=409, detail="A reply was already sent after the last customer message")
+    for m in later:
+        db.delete(m)
+    enqueue(db, "generate_reply", {"message_id": last_in.id}, workspace_id=ctx.workspace.id)
+    db.commit()
+    return {"id": conv.id, "queued": True}

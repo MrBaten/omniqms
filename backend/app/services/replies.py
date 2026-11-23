@@ -105,11 +105,7 @@ async def handle_generate_reply(db: Session, job: Job) -> None:
     if later is not None:
         return
     settings = ws_settings(ws)
-    if not settings.get("auto_reply_enabled", True):
-        if conv.status != "pending_human":
-            conv.status = "open"
-        db.commit()
-        return
+    auto_send = bool(settings.get("auto_reply_enabled", True))  # off = draft-only mode (AI drafts, human sends)
     if acct.status != "connected":
         conv.status = "pending_human"
         db.commit()
@@ -119,7 +115,7 @@ async def handle_generate_reply(db: Session, job: Job) -> None:
     threshold = float(settings.get("confidence_threshold", 0.6))
     ai_allowed = reply_window(conv)["dm_ai_allowed"]
     confident = (not result["needs_human"]) and result["answer"] and result["confidence"] >= threshold
-    if confident and ai_allowed:
+    if confident and ai_allowed and auto_send:
         out = Message(workspace_id=ws.id, conversation_id=conv.id, account_id=acct.id, direction="outbound",
                       author="ai", text=result["answer"], ai_confidence=result["confidence"],
                       ai_sources=result["sources"], delivery_status="queued")
