@@ -7,6 +7,7 @@ import pytest
 import respx
 
 from app.adapters import get_adapter
+from app.adapters.facebook import FacebookAdapter
 from app.adapters.base import AccountContext, AccountGrant, AdapterError, ReplyTarget, TokenBundle
 from app.core.crypto import hmac_sha256_hex
 
@@ -274,3 +275,23 @@ async def test_send_network_error_retryable(fb):
 async def test_send_empty_text(fb):
     res = await fb.send_reply(acct(), dm_target(timedelta(hours=1), False), "   ")
     assert not res.ok and res.error == "empty_text"
+
+
+@respx.mock
+async def test_on_connected_creates_app_webhook_subscription():
+    from urllib.parse import parse_qs
+    sub = respx.post(f"{G}/fbapp/subscriptions").mock(return_value=httpx.Response(200, json={"success": True}))
+    respx.post(f"{G}/P1/subscribed_apps").mock(return_value=httpx.Response(200, json={"success": True}))
+    await FacebookAdapter().on_connected(AccountGrant(external_id="P1", name="x", tokens=TokenBundle(access_token="pt")))
+    assert sub.called
+    body = parse_qs(sub.calls.last.request.content.decode())
+    assert body["object"] == ["page"] and "feed" in body["fields"][0] and "messages" in body["fields"][0]
+    assert body["callback_url"][0].endswith("/webhooks/facebook")
+
+
+@respx.mock
+async def test_app_subscription_failure_does_not_block_connect():
+    respx.post(f"{G}/fbapp/subscriptions").mock(return_value=httpx.Response(400, json={"error": {"code": 100}}))
+    page = respx.post(f"{G}/P1/subscribed_apps").mock(return_value=httpx.Response(200, json={"success": True}))
+    await FacebookAdapter().on_connected(AccountGrant(external_id="P1", name="x", tokens=TokenBundle(access_token="pt")))
+    assert page.called

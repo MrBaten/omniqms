@@ -90,9 +90,30 @@ class FacebookAdapter(PlatformAdapter):
             raise AdapterError("no Facebook Pages were granted")
         return grants
 
+    async def ensure_app_subscription(self, http: httpx.AsyncClient) -> None:
+        """App-level webhook subscription for the Page object (fields messages + feed). Idempotent; Meta
+        re-verifies the callback URL. Best effort: a failure here must not block connecting a Page."""
+        s = get_settings()
+        if not (s.meta_app_id and s.meta_app_secret and s.meta_webhook_verify_token):
+            return
+        try:
+            r = await http.post(f"{self._graph()}/{s.meta_app_id}/subscriptions", data={
+                "object": "page",
+                "callback_url": f"{s.public_base_url.rstrip('/')}/webhooks/facebook",
+                "verify_token": s.meta_webhook_verify_token,
+                "fields": "messages,messaging_postbacks,message_echoes,feed",
+                "include_values": "true",
+                "access_token": f"{s.meta_app_id}|{s.meta_app_secret}",
+            })
+            c.raise_for_graph(r, "app subscription")
+        except Exception as e:  # noqa: BLE001 — best effort, never blocks the Page connection
+            import logging
+            logging.getLogger("omniqms.facebook").warning("app webhook subscription failed: %s", type(e).__name__)
+
     async def on_connected(self, grant: AccountGrant) -> None:
         try:
             async with c.client() as http:
+                await self.ensure_app_subscription(http)
                 r = await http.post(f"{self._graph()}/{grant.external_id}/subscribed_apps", data={
                     "subscribed_fields": "messages,feed",
                     "access_token": grant.tokens.access_token,
