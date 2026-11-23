@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     meta_graph_version: str = "v26.0"
     # Facebook Login for Business (Business-type apps): configuration ID that replaces the scope list
     meta_login_config_id: str = ""
+    meta_ig_login_config_id: str = ""  # Instagram via Facebook Login (newer apps); enables that connector
 
     # Instagram API with Instagram Login (Business Login for Instagram)
     ig_app_id: str = ""
