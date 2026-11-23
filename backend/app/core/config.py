@@ -35,11 +35,13 @@ class Settings(BaseSettings):
     youtube_poll_seconds: int = 120
 
     # AI
-    llm_provider: str = "mock"  # mock | openai | anthropic
+    llm_provider: str = "mock"  # mock | openai | anthropic | openrouter
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-haiku-4-5"
+    openrouter_api_key: str = ""
+    openrouter_model: str = "openai/gpt-4o-mini"
     embeddings: str = "none"  # none | openai
     openai_embedding_model: str = "text-embedding-3-small"
 

@@ -111,8 +111,30 @@ class AnthropicProvider(LLMProvider):
             return _parse_json_result(text)
 
 
+class OpenRouterProvider(LLMProvider):
+    """OpenAI-compatible chat completions through OpenRouter (any model id, e.g. openai/gpt-4o-mini)."""
+    name = "openrouter"
+
+    def __init__(self, s: Settings):
+        self.s = s
+
+    async def generate(self, system: str, user: str, ctx: ProviderContext) -> LLMResult:
+        async with httpx.AsyncClient(timeout=40) as c:
+            r = await c.post("https://openrouter.ai/api/v1/chat/completions",
+                             headers={"Authorization": f"Bearer {self.s.openrouter_api_key}",
+                                      "HTTP-Referer": self.s.public_base_url, "X-Title": "OmniQMS"},
+                             json={"model": self.s.openrouter_model, "temperature": 0.2, "max_tokens": 700,
+                                   "response_format": {"type": "json_object"},
+                                   "messages": [{"role": "system", "content": system},
+                                                {"role": "user", "content": user}]})
+            r.raise_for_status()
+            return _parse_json_result(r.json()["choices"][0]["message"]["content"] or "")
+
+
 def get_provider(s: Settings | None = None) -> LLMProvider:
     s = s or get_settings()
+    if s.llm_provider == "openrouter" and s.openrouter_api_key:
+        return OpenRouterProvider(s)
     if s.llm_provider == "openai" and s.openai_api_key:
         return OpenAIProvider(s)
     if s.llm_provider == "anthropic" and s.anthropic_api_key:
