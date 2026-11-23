@@ -295,3 +295,20 @@ async def test_app_subscription_failure_does_not_block_connect():
     page = respx.post(f"{G}/P1/subscribed_apps").mock(return_value=httpx.Response(200, json={"success": True}))
     await FacebookAdapter().on_connected(AccountGrant(external_id="P1", name="x", tokens=TokenBundle(access_token="pt")))
     assert page.called
+
+
+@respx.mock
+async def test_exchange_uses_granular_scopes_when_me_accounts_empty():
+    respx.get(f"{G}/oauth/access_token").mock(side_effect=[
+        httpx.Response(200, json={"access_token": "short"}), httpx.Response(200, json={"access_token": "long"})])
+    respx.get(f"{G}/me/accounts").mock(return_value=httpx.Response(200, json={"data": []}))
+    respx.get(f"{G}/debug_token").mock(return_value=httpx.Response(200, json={"data": {"granular_scopes": [
+        {"scope": "pages_messaging", "target_ids": ["395688656962311"]},
+        {"scope": "pages_show_list", "target_ids": ["395688656962311"]},
+        {"scope": "business_management", "target_ids": ["1462419934965768"]}]}}))
+    page = respx.get(f"{G}/395688656962311").mock(return_value=httpx.Response(200, json={
+        "id": "395688656962311", "name": "Baten", "access_token": "PAGE-TOKEN"}))
+    grants = await FacebookAdapter().exchange_code("CODE", "https://x/cb")
+    assert [g.external_id for g in grants] == ["395688656962311"]
+    assert grants[0].tokens.access_token == "PAGE-TOKEN" and grants[0].name == "Baten"
+    assert page.call_count == 1

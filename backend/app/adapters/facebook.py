@@ -84,14 +84,48 @@ class FacebookAdapter(PlatformAdapter):
                         ))
                     url = (data.get("paging") or {}).get("next")
                     params = None  # 'next' URL already carries its query string
-                    import logging
-                    logging.getLogger("omniqms.facebook").info(
-                        "list pages: returned=%d usable=%d", len(data.get("data") or []), len(grants))
+
+                # Facebook Login for Business: Pages granted in the dialog may be missing from /me/accounts.
+                # The token's granular scopes list the granted Page IDs; fetch each Page's token directly.
+                seen = {gr.external_id for gr in grants}
+                for page_id in await self._granted_page_ids(http, long_token):
+                    if page_id in seen:
+                        continue
+                    r = await http.get(f"{g}/{page_id}", params={"fields": "id,name,access_token",
+                                                                 "access_token": long_token})
+                    try:
+                        p = c.raise_for_graph(r, "page token")
+                    except AdapterError:
+                        continue
+                    if p.get("id") and p.get("access_token"):
+                        grants.append(AccountGrant(external_id=str(p["id"]), name=c.truncate(p.get("name"), 300),
+                                                   tokens=TokenBundle(access_token=p["access_token"]),
+                                                   meta={"via": "granular_scopes"}))
+                        seen.add(str(p["id"]))
+                import logging
+                logging.getLogger("omniqms.facebook").info("pages granted: usable=%d", len(grants))
         except httpx.HTTPError as e:
             raise AdapterError(f"network error: {type(e).__name__}", retryable=True) from e
         if not grants:
             raise AdapterError("no Facebook Pages were granted")
         return grants
+
+    async def _granted_page_ids(self, http: httpx.AsyncClient, user_token: str) -> list[str]:
+        """Page IDs the user granted, from debug_token granular_scopes (pages_* scopes)."""
+        s = get_settings()
+        try:
+            r = await http.get(f"{self._graph()}/debug_token", params={
+                "input_token": user_token, "access_token": f"{s.meta_app_id}|{s.meta_app_secret}"})
+            data = c.raise_for_graph(r, "debug token").get("data") or {}
+        except Exception:  # noqa: BLE001 — best effort; /me/accounts results still apply
+            return []
+        ids: list[str] = []
+        for gs in data.get("granular_scopes") or []:
+            if isinstance(gs, dict) and str(gs.get("scope", "")).startswith("pages_"):
+                for t in gs.get("target_ids") or []:
+                    if str(t) not in ids:
+                        ids.append(str(t))
+        return ids[:100]
 
     async def ensure_app_subscription(self, http: httpx.AsyncClient) -> None:
         """App-level webhook subscription for the Page object (fields messages + feed). Idempotent; Meta
