@@ -16,6 +16,12 @@ from app.core.db import create_all
 from app.core.security import csrf_ok, ensure_safe_config
 
 log = logging.getLogger("omniqms")
+if not log.handlers:  # app-level INFO logs (webhooks received, replies sent) — never message text or tokens
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
+    log.propagate = False
 
 WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 
