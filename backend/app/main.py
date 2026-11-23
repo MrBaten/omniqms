@@ -16,6 +16,19 @@ from app.core.db import create_all
 from app.core.security import csrf_ok, ensure_safe_config
 
 log = logging.getLogger("omniqms")
+
+
+class _RedactQuery(logging.Filter):
+    """Keep OAuth codes, states and verify tokens out of access logs."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and len(record.args) >= 3 and isinstance(record.args[2], str):
+            a = list(record.args)
+            a[2] = a[2].split("?", 1)[0] + ("?…" if "?" in a[2] else "")
+            record.args = tuple(a)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_RedactQuery())
 if not log.handlers:  # app-level INFO logs (webhooks received, replies sent) — never message text or tokens
     _h = logging.StreamHandler()
     _h.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))

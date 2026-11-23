@@ -84,6 +84,9 @@ class FacebookAdapter(PlatformAdapter):
                         ))
                     url = (data.get("paging") or {}).get("next")
                     params = None  # 'next' URL already carries its query string
+                    import logging
+                    logging.getLogger("omniqms.facebook").info(
+                        "list pages: returned=%d usable=%d", len(data.get("data") or []), len(grants))
         except httpx.HTTPError as e:
             raise AdapterError(f"network error: {type(e).__name__}", retryable=True) from e
         if not grants:

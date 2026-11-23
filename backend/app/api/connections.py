@@ -68,6 +68,10 @@ def start_connect(platform: str, ctx: MemberContext = Depends(workspace_member),
 
 
 def _back(**params) -> RedirectResponse:
+    if "error" in params:
+        log.warning("oauth callback result: error=%s", params["error"])
+    else:
+        log.info("oauth callback result: %s", ",".join(f"{k}={v}" for k, v in params.items()))
     return RedirectResponse(f"/app/connections?{urlencode(params)}", status_code=302)
 
 
@@ -99,7 +103,8 @@ async def oauth_callback(platform: str, request: Request, db: Session = Depends(
     try:
         grants = await adapter.exchange_code(code, redirect_uri(platform))
     except Exception as e:  # AdapterError or HTTP errors — never leak details
-        log.warning("oauth exchange failed platform=%s err=%s", platform, type(e).__name__)
+        log.warning("oauth exchange failed platform=%s err=%s detail=%s", platform, type(e).__name__,
+                    str(e)[:200] if isinstance(e, AdapterError) else "")
         return _back(error="exchange_failed")
     if not grants:
         return _back(error="no_accounts")
